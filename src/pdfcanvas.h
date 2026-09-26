@@ -24,6 +24,7 @@ public:
     void set_snap_mm(int mm);
     void set_add_line_mode(bool enabled);
     bool load_pdf(const QString &pdf_path);
+    bool has_calibration() const { return page_calibration_valid_; }
 
 signals:
     void add_point_clicked(double x, double y);
@@ -42,8 +43,8 @@ protected:
     void mouseReleaseEvent(QMouseEvent *event) override;
 
 private:
-    static bool is_near_color(int r, int g, int b, int tr, int tg, int tb, int max_dist_sq);
-    static std::vector<QPointF> find_color_centroids(const QImage &img, char target);
+    friend class calibrationtest;
+    bool load_calibration(const QString &pdf_path);
 
     void update_calibration(const QRect &target_rect);
     QPointF world_to_screen(double x, double y) const;
@@ -87,6 +88,10 @@ private:
     std::vector<bezier_pair> beziers_;
     std::vector<rectangle_pair> rectangles_;
     bool calibration_valid_ = false;
+    bool page_calibration_valid_ = false;
+    QPointF page_origin_;
+    QPointF page_axis_x_;
+    QPointF page_axis_y_;
     QPointF origin_px_{0.0, 0.0};
     QPointF axis_x_px_{1.0, 0.0};
     QPointF axis_y_px_{0.0, -1.0};

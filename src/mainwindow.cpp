@@ -1443,6 +1443,10 @@ void mainwindow::on_compile_finished(bool success, const QString &pdf_path, cons
             append_colored_log(
                 output_, "[Status] Compiled successfully", theme_id_ == "dark" ? QColor("#86efac") : QColor("#16a34a"));
             statusBar()->showMessage("Compile successful", 2500);
+            if (!preview_canvas_->has_calibration()) {
+                on_compile_service_output("[Preview] Coordinate calibration unavailable: visual editing disabled.");
+                statusBar()->showMessage("Preview available; coordinate calibration unavailable", 5000);
+            }
         }
     }
 

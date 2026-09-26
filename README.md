@@ -65,7 +65,9 @@ Updates are applied to the source and recompiled automatically.
 ## Compilation Pipeline
 
 - Uses a local LaTeX compiler process (default `pdflatex`)
-- Injects helper overlays/markers into the temporary compile document for calibration and grid display
+- Injects the preview grid and invisible numerical calibration into the temporary compile document
+- Reads the picture origin recorded by PGF and its exported coordinate basis after compilation;
+  calibration no longer relies on colored dots or pixel detection
 - Loads generated PDF into preview canvas
 - Reports compile output and status in the console pane
 
@@ -117,6 +119,20 @@ cmake --build build -j
 QTikZ intentionally focuses on a defined subset of TikZ constructs.
 Complex or highly custom TikZ expressions may not be parsed into editable markers/properties.
 Source editing remains fully available for unsupported constructs.
+
+Numerical calibration is tested with pdfLaTeX and LuaLaTeX, including `article`,
+cropped `standalone` pages, and picture-level rotations, scales and oblique axes.
+Interactive calibration targets the first TikZ picture on the first physical page.
+Nested scopes with their own transforms and external PDF cropping/rotation are not
+covered by this global mapping. Missing calibration disables canvas coordinate editing.
+
+To run the integration checks (requires both engines and the `standalone` package):
+
+```bash
+cmake -S . -B build -DQTIKZ_BUILD_TESTS=ON
+cmake --build build -j
+ctest --test-dir build --output-on-failure
+```
 
 ## License
 

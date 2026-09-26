@@ -1,13 +1,16 @@
 #include "pdfcanvas.h"
 
 #include <QLineF>
+#include <QFile>
+#include <QFileInfo>
+#include <QRegularExpression>
+#include <QTextStream>
 #include <QMouseEvent>
 #include <QPainter>
 #include <QPen>
 #include <QWheelEvent>
 
 #include <cmath>
-#include <queue>
 
 pdfcanvas::pdfcanvas(QWidget *parent) : QWidget(parent) {
     setFocusPolicy(Qt::StrongFocus);
@@ -47,9 +50,18 @@ void pdfcanvas::set_add_line_mode(bool enabled) {
 }
 
 bool pdfcanvas::load_pdf(const QString &pdf_path) {
+    calibration_valid_ = false;
+    page_calibration_valid_ = false;
     rendered_image_ = QImage();
     rendered_size_ = QSize();
+    pdf_document_.close();
     const QPdfDocument::Error err = pdf_document_.load(pdf_path);
+    if (err == QPdfDocument::Error::None && pdf_document_.pageCount() > 0) {
+        page_calibration_valid_ = load_calibration(pdf_path);
+        if (!page_calibration_valid_) {
+            qWarning("Preview calibration unavailable; coordinate editing disabled.");
+        }
+    }
     update();
     return err == QPdfDocument::Error::None;
 }
@@ -396,164 +408,72 @@ void pdfcanvas::mouseReleaseEvent(QMouseEvent *event) {
     QWidget::mouseReleaseEvent(event);
 }
 
-bool pdfcanvas::is_near_color(int r, int g, int b, int tr, int tg, int tb, int max_dist_sq) {
-    const int dr = r - tr;
-    const int dg = g - tg;
-    const int db = b - tb;
-    return (dr * dr + dg * dg + db * db) <= max_dist_sq;
-}
-
-std::vector<QPointF> pdfcanvas::find_color_centroids(const QImage &img, char target) {
-    std::vector<QPointF> out;
-    if (img.isNull()) {
-        return out;
+bool pdfcanvas::load_calibration(const QString &pdf_path) {
+    QFile positions(QFileInfo(pdf_path).absolutePath() + "/document.qtikz");
+    QFile auxiliary(QFileInfo(pdf_path).absolutePath() + "/document.aux");
+    if (!positions.open(QIODevice::ReadOnly | QIODevice::Text) ||
+        !auxiliary.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
     }
-
-    int tr = 0;
-    int tg = 0;
-    int tb = 0;
-    if (target == 'r') {
-        tr = 253; tg = 17; tb = 251;
-    } else if (target == 'g') {
-        tr = 19; tg = 251; tb = 233;
-    } else if (target == 'b') {
-        tr = 13; tg = 97; tb = 255;
+    QTextStream in(&positions);
+    QString version, picture_id, page_tag;
+    QPointF basis[3];
+    int page = 0;
+    in >> version >> picture_id;
+    for (QPointF &point : basis) {
+        double x = 0, y = 0;
+        in >> x >> y;
+        point = QPointF(x, y);
     }
-
-    const int max_dist_sq = 30 * 30;
-    const int w = img.width();
-    const int h = img.height();
-    std::vector<unsigned char> mask(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
-    std::vector<unsigned char> visited(static_cast<size_t>(w) * static_cast<size_t>(h), 0);
-
-    for (int y = 0; y < img.height(); ++y) {
-        const QRgb *row = reinterpret_cast<const QRgb *>(img.constScanLine(y));
-        for (int x = 0; x < img.width(); ++x) {
-            const int r = qRed(row[x]);
-            const int g = qGreen(row[x]);
-            const int b = qBlue(row[x]);
-            if (is_near_color(r, g, b, tr, tg, tb, max_dist_sq)) {
-                mask[static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x)] = 1;
-            }
+    in >> page_tag >> page;
+    if (in.status() != QTextStream::Ok || version != "QTIKZ1" ||
+        page_tag != "PAGE" || page != 1) {
+        return false; // The preview displays the first physical page only.
+    }
+    const QRegularExpression mark(
+        QStringLiteral(R"(\\pgfsyspdfmark\s*\{%1\}\{(-?\d+)\}\{(-?\d+)\})")
+            .arg(QRegularExpression::escape(picture_id)));
+    const auto match = mark.match(QString::fromUtf8(auxiliary.readAll()));
+    if (!match.hasMatch()) {
+        return false;
+    }
+    const QPointF origin(match.captured(1).toDouble(), match.captured(2).toDouble());
+    // TeX sp -> PDF points (bp); PDF/TeX origin is bottom-left, Qt is top-left.
+    constexpr double sp_to_bp = 72.0 / (72.27 * 65536.0);
+    const double height = pdf_document_.pagePointSize(0).height();
+    for (QPointF &point : basis) {
+        point += origin;
+        point = QPointF(point.x() * sp_to_bp, height - point.y() * sp_to_bp);
+        if (!std::isfinite(point.x()) || !std::isfinite(point.y())) {
+            return false;
         }
     }
-
-    static const int dx[8] = {-1, 0, 1, -1, 1, -1, 0, 1};
-    static const int dy[8] = {-1, -1, -1, 0, 0, 1, 1, 1};
-    constexpr int min_component_pixels = 1;
-
-    for (int y = 0; y < h; ++y) {
-        for (int x = 0; x < w; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(w) + static_cast<size_t>(x);
-            if (!mask[idx] || visited[idx]) {
-                continue;
-            }
-
-            std::queue<QPoint> q;
-            q.push(QPoint(x, y));
-            visited[idx] = 1;
-
-            double sx = 0.0;
-            double sy = 0.0;
-            int count = 0;
-
-            while (!q.empty()) {
-                const QPoint p = q.front();
-                q.pop();
-                sx += static_cast<double>(p.x());
-                sy += static_cast<double>(p.y());
-                ++count;
-
-                for (int k = 0; k < 8; ++k) {
-                    const int nx = p.x() + dx[k];
-                    const int ny = p.y() + dy[k];
-                    if (nx < 0 || ny < 0 || nx >= w || ny >= h) {
-                        continue;
-                    }
-                    const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(w) + static_cast<size_t>(nx);
-                    if (!mask[nidx] || visited[nidx]) {
-                        continue;
-                    }
-                    visited[nidx] = 1;
-                    q.push(QPoint(nx, ny));
-                }
-            }
-
-            if (count >= min_component_pixels) {
-                out.push_back(QPointF(sx / count, sy / count));
-            }
-        }
+    const QPointF u = basis[1] - basis[0];
+    const QPointF v = basis[2] - basis[0];
+    if (std::abs(u.x() * v.y() - u.y() * v.x()) < 1e-9) {
+        return false;
     }
-
-    return out;
+    page_origin_ = basis[0];
+    page_axis_x_ = basis[1];
+    page_axis_y_ = basis[2];
+    return true;
 }
 
 void pdfcanvas::update_calibration(const QRect &target_rect) {
     calibration_valid_ = false;
-    if (rendered_image_.isNull() || !target_rect.isValid()) {
+    const QSizeF page_size = pdf_document_.pagePointSize(0);
+    if (!page_calibration_valid_ || !target_rect.isValid() ||
+        page_size.width() <= 0 || page_size.height() <= 0) {
         return;
     }
-
-    const std::vector<QPointF> r_candidates = find_color_centroids(rendered_image_, 'r');
-    const std::vector<QPointF> g_candidates = find_color_centroids(rendered_image_, 'g');
-    const std::vector<QPointF> b_candidates = find_color_centroids(rendered_image_, 'b');
-    if (r_candidates.empty() || g_candidates.empty() || b_candidates.empty()) {
-        return;
-    }
-
-    QPointF red_local;
-    QPointF green_local;
-    QPointF blue_local;
-    double best_score = 1e18;
-    bool found = false;
-
-    // Choose the RGB triple that best matches the expected local basis:
-    // vectors (R->G) and (R->B) should be close to orthogonal and similar length.
-    for (const QPointF &r : r_candidates) {
-        for (const QPointF &g : g_candidates) {
-            const QPointF u = g - r;
-            const double lu = std::hypot(u.x(), u.y());
-            if (lu < 2.0) {
-                continue;
-            }
-            for (const QPointF &b : b_candidates) {
-                const QPointF v = b - r;
-                const double lv = std::hypot(v.x(), v.y());
-                if (lv < 2.0) {
-                    continue;
-                }
-                const double det = u.x() * v.y() - u.y() * v.x();
-                if (std::abs(det) < 1e-6) {
-                    continue;
-                }
-                const double dot = u.x() * v.x() + u.y() * v.y();
-                const double ortho = std::abs(dot) / (lu * lv); // 0 is best
-                const double len_balance = std::abs(lu - lv) / qMax(lu, lv); // 0 is best
-                const double score = ortho * 2.0 + len_balance;
-                if (score < best_score) {
-                    best_score = score;
-                    red_local = r;
-                    green_local = g;
-                    blue_local = b;
-                    found = true;
-                }
-            }
-        }
-    }
-
-    if (!found) {
-        return;
-    }
-
-    const QPointF top_left = target_rect.topLeft();
-    origin_px_ = top_left + red_local;
-    axis_x_px_ = top_left + green_local;
-    axis_y_px_ = top_left + blue_local;
-
-    const QPointF u = axis_x_px_ - origin_px_;
-    const QPointF v = axis_y_px_ - origin_px_;
-    const double det = u.x() * v.y() - u.y() * v.x();
-    calibration_valid_ = std::abs(det) > 1e-6;
+    const auto to_screen = [&](const QPointF &point) {
+        return QPointF(target_rect.left() + point.x() * target_rect.width() / page_size.width(),
+                       target_rect.top() + point.y() * target_rect.height() / page_size.height());
+    };
+    origin_px_ = to_screen(page_origin_);
+    axis_x_px_ = to_screen(page_axis_x_);
+    axis_y_px_ = to_screen(page_axis_y_);
+    calibration_valid_ = true;
 }
 
 QPointF pdfcanvas::world_to_screen(double x, double y) const {

@@ -81,18 +81,27 @@ QString compileservice::inject_grid(const QString &source, int grid_step_mm, int
         grid_block += "  \\draw[gray!50, thin] (0," + min_xy + ") -- (0," + max_xy + ");\n";
     }
 
-    QString marker_block;
-    marker_block += "\n  % ktikz calibration markers (top layer)\n";
-    marker_block += "  \\fill[draw=none,fill={rgb,255:red,253;green,17;blue,251}] (0,0) circle[radius=2.0pt];\n";
-    marker_block += "  \\fill[draw=none,fill={rgb,255:red,19;green,251;blue,233}] (1,0) circle[radius=2.0pt];\n";
-    marker_block += "  \\fill[draw=none,fill={rgb,255:red,13;green,97;blue,255}] (0,1) circle[radius=2.0pt];\n";
+    // PGF writes the picture's absolute origin to the aux file at shipout.
+    // Export the local basis in scaled TeX points before drawing the contents.
+    // No paths or nodes are added, so calibration cannot change the bounding box.
+    const QString calibration_block = QString::fromLatin1(R"TEX(
+\pgfrememberpicturepositiononpagetrue
+\newwrite\qtikzpositions
+\immediate\openout\qtikzpositions=\jobname.qtikz
+\immediate\write\qtikzpositions{QTIKZ1 \pgfpictureid}
+\begingroup
+\def\qtikzpoint#1#2{%
+  \csname pgf@process\endcsname{\pgfpointtransformed{\pgfpointxy{#1}{#2}}}%
+  \immediate\write\qtikzpositions{\number\csname pgf@x\endcsname\space\number\csname pgf@y\endcsname}}
+\qtikzpoint{0}{0}
+\qtikzpoint{1}{0}
+\qtikzpoint{0}{1}
+\endgroup
+\write\qtikzpositions{PAGE \number\ReadonlyShipoutCounter}
+)TEX");
 
     QString out = source;
-    out.insert(begin_match.capturedEnd(0), grid_block);
-    const int end_pos = out.lastIndexOf("\\end{tikzpicture}");
-    if (end_pos >= 0) {
-        out.insert(end_pos, marker_block);
-    }
+    out.insert(begin_match.capturedEnd(0), calibration_block + grid_block);
     return out;
 }
 
@@ -109,6 +118,8 @@ void compileservice::compile(const QString &source_text, int grid_step_mm, int g
         return;
     }
 
+    // Never pair a new PDF with calibration left by an earlier compilation.
+    QFile::remove(work_dir_path_ + "/document.qtikz");
     QFile tex_file(work_dir_path_ + "/document.tex");
     if (!tex_file.open(QIODevice::WriteOnly | QIODevice::Text | QIODevice::Truncate)) {
         emit output_text("[Compile] Could not write document.tex");

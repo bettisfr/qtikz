@@ -34,3 +34,14 @@ target_link_libraries(qtikz PRIVATE
 )
 
 install(TARGETS qtikz RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+
+option(QTIKZ_BUILD_TESTS "Build LaTeX/PDF calibration integration tests" OFF)
+if(QTIKZ_BUILD_TESTS)
+    enable_testing()
+    add_executable(calibration_test tests/calibration_test.cpp
+        src/compileservice.cpp src/pdfcanvas.cpp)
+    target_include_directories(calibration_test PRIVATE src)
+    target_link_libraries(calibration_test PRIVATE Qt6::Core Qt6::Widgets Qt6::Pdf)
+    add_test(NAME calibration COMMAND calibration_test)
+    set_tests_properties(calibration PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
