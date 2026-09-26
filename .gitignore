@@ -4,3 +4,6 @@ build/
 *.pdf
 *.png
 *.out
+
+# Local Codex project metadata
+.codex-project-id
