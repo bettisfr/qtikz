@@ -6,6 +6,7 @@
 #include <QComboBox>
 #include <QCloseEvent>
 #include <QDoubleSpinBox>
+#include <QDir>
 #include <QFile>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -1145,6 +1146,7 @@ void mainwindow::load_settings() {
     const QString saved_theme = settings.value("ui/theme", theme_id_).toString();
     const int saved_delay_ms = settings.value("build/auto_compile_delay_ms", auto_compile_delay_ms_).toInt();
     const QString saved_compiler = settings.value("build/compiler_command", compiler_command_).toString();
+    const QString saved_file_directory = settings.value("file/last_directory").toString();
     const int saved_step_mm = settings.value("grid/step_mm", grid_snap_mm_).toInt();
     const int saved_extent_cm = settings.value("grid/extent_cm", grid_extent_cm_).toInt();
 
@@ -1157,6 +1159,7 @@ void mainwindow::load_settings() {
         auto_compile_timer_->setInterval(auto_compile_delay_ms_);
     }
     compiler_command_ = saved_compiler.trimmed().isEmpty() ? QStringLiteral("pdflatex") : saved_compiler.trimmed();
+    last_file_directory_ = saved_file_directory;
     if (compile_service_) {
         compile_service_->set_compiler_command(compiler_command_);
     }
@@ -1190,6 +1193,7 @@ void mainwindow::save_settings() const {
     settings.setValue("ui/theme", theme_id_);
     settings.setValue("build/auto_compile_delay_ms", auto_compile_delay_ms_);
     settings.setValue("build/compiler_command", compiler_command_);
+    settings.setValue("file/last_directory", last_file_directory_);
     settings.setValue("grid/step_mm", grid_snap_mm_);
     settings.setValue("grid/extent_cm", grid_extent_cm_);
 }
@@ -1265,10 +1269,18 @@ void mainwindow::load_file() {
         return;
     }
 
+    QString initial_directory = last_file_directory_;
+    if (!current_file_path_.isEmpty()) {
+        initial_directory = QFileInfo(current_file_path_).absolutePath();
+    }
+    if (initial_directory.isEmpty() || !QDir(initial_directory).exists()) {
+        initial_directory = QDir::homePath();
+    }
+
     const QString path = QFileDialog::getOpenFileName(
         this,
         "Load TikZ/LaTeX File",
-        QDir::homePath(),
+        initial_directory,
         "TeX files (*.tex *.tikz);;All files (*)");
     if (path.isEmpty()) {
         return;
@@ -1284,6 +1296,8 @@ void mainwindow::load_file() {
     replace_editor_text_preserve_undo(in.readAll());
     editor_->document()->setModified(false);
     current_file_path_ = path;
+    last_file_directory_ = QFileInfo(path).absolutePath();
+    save_settings();
     update_window_title();
     statusBar()->showMessage("Loaded " + QFileInfo(path).fileName(), 3000);
 }
@@ -1310,6 +1324,8 @@ void mainwindow::save_file() {
     file.close();
 
     current_file_path_ = path;
+    last_file_directory_ = QFileInfo(path).absolutePath();
+    save_settings();
     editor_->document()->setModified(false);
     update_window_title();
     statusBar()->showMessage("Saved " + QFileInfo(path).fileName(), 3000);
@@ -1323,7 +1339,9 @@ void mainwindow::save_file_as() {
     const QString path = QFileDialog::getSaveFileName(
         this,
         "Save As",
-        current_file_path_.isEmpty() ? QDir::homePath() : current_file_path_,
+        !current_file_path_.isEmpty()
+            ? current_file_path_
+            : (last_file_directory_.isEmpty() ? QDir::homePath() : last_file_directory_),
         "TeX files (*.tex *.tikz);;All files (*)");
     if (path.isEmpty()) {
         return;
@@ -1340,6 +1358,8 @@ void mainwindow::save_file_as() {
     file.close();
 
     current_file_path_ = path;
+    last_file_directory_ = QFileInfo(path).absolutePath();
+    save_settings();
     editor_->document()->setModified(false);
     update_window_title();
     statusBar()->showMessage("Saved " + QFileInfo(path).fileName(), 3000);

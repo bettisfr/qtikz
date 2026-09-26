@@ -137,6 +137,7 @@ private:
     bool show_line_numbers_ = true;
     int auto_compile_delay_ms_ = 450;
     QString compiler_command_ = QStringLiteral("pdflatex");
+    QString last_file_directory_;
     QString theme_id_ = QStringLiteral("system");
     bool suppress_auto_compile_ = false;
     bool pending_compile_ = false;
